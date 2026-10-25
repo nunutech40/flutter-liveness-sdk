@@ -1,0 +1,28 @@
+name: flutter_liveness_sdk
+description: Guided face-action verification for Flutter on Android and iOS.
+version: 0.1.0
+homepage: https://github.com/nunutech40/flutter-liveness-sdk
+repository: https://github.com/nunutech40/flutter-liveness-sdk
+issue_tracker: https://github.com/nunutech40/flutter-liveness-sdk/issues
+
+environment:
+  sdk: ">=3.11.0 <4.0.0"
+  flutter: ">=3.41.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.nunutech40.flutter_liveness_sdk
+        pluginClass: FlutterLivenessSdkPlugin
+      ios:
+        pluginClass: FlutterLivenessSdkPlugin

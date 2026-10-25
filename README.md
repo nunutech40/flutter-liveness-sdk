@@ -1,240 +1,133 @@
 # Flutter Liveness SDK
 
-A planned Flutter plugin for guided face-action verification on Android and iOS.
+A Flutter plugin for guided face-action capture on Android and iOS. It uses one repository for the Dart API, Kotlin implementation, and Swift implementation. The first planned consumer is KomerceOS.
 
-> **Status: design and implementation plan.** This repository currently contains documentation only. The API, platform code, example app, and releases described below do not exist yet.
+**Status: initial implementation (0.1.0), not yet validated on physical devices.** The package contains native capture screens and a working Dart contract. Android debug and iOS device builds pass; real-device calibration remains a release gate. Do not use this version as the sole control for high-stakes identity decisions.
 
-The first consumer is [KomerceOS](https://github.com/nunutech40). The Android implementation will start from the existing [android-liveness-sdk](https://github.com/nunutech40/android-liveness-sdk); the iOS implementation will be written in Swift in this repository. Once ported, this plugin will own both implementations. KomerceOS will install one Flutter package and will not need a JitPack dependency for liveness.
+This is challenge-based face-action verification. It does not establish resistance to printed photos, replayed video, masks, or camera injection. ML Kit detects facial features; it is not an anti-spoofing verdict.
 
-## Goals and scope
+## Requirements
 
-- Offer the same Dart API and user-facing challenge flow on Android and iOS: look left, look right, smile, and blink.
-- Keep camera frames and face analysis on the native side. Send configuration, progress, errors, and file references across Flutter channels.
-- Support a lower-cost analysis profile for slower devices without silently weakening the verification criteria.
-- Produce a final selfie and optional per-step evidence, with documented orientation, format, and lifecycle.
-- Handle camera permission, cancellation, timeout, app lifecycle changes, and recoverable failures predictably.
-- Keep this plugin usable independently of KomerceOS while validating it against KomerceOS before release.
-
-This is **challenge-based face-action verification**. Face detection and completing actions do not by themselves prove resistance to printed photos, replayed video, masks, or injected camera frames. Do not describe the SDK as certified presentation attack detection or use a local `success` flag as the sole basis for a high-stakes identity decision. Attack testing and any stronger anti-spoofing controls are separate release criteria.
-
-## Repository strategy
-
-This is **one repository for the new Flutter SDK**, containing Dart, Kotlin, and Swift. The existing Android-only repository remains available to its current native Android consumers. Its source is the starting point for the Android implementation here, not a runtime dependency. During migration, fixes needed by both products must be applied to both repositories; after that, this plugin is the source of truth for its Flutter-facing implementation.
-
-Proposed layout:
-
-```text
-flutter-liveness-sdk/
-├── lib/
-│   ├── flutter_liveness_sdk.dart       # Public Dart API
-│   └── src/                            # Models, events, channel adapter
-├── android/
-│   └── src/main/kotlin/.../            # Flutter bridge, screen, CameraX, ML Kit, rules
-├── ios/
-│   ├── Classes/                        # Flutter bridge, screen, AVFoundation, ML Kit, rules
-│   └── flutter_liveness_sdk.podspec     # Native iOS dependencies and deployment target
-├── example/                             # Android/iOS integration app
-├── test/                                # Dart API and state-machine tests
-└── README.md
-```
-
-The generated Flutter plugin layout may vary with the Flutter version; keep the same ownership boundaries if the scaffold uses a newer iOS source layout.
-
-## Existing Android SDK as the implementation reference
-
-The Android baseline is [android-liveness-sdk at commit `29d8a95`](https://github.com/nunutech40/android-liveness-sdk/tree/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e). The source is the baseline for **current Android behavior**; its [README](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/README.md) documents the existing public usage. Neither defines a promised Flutter API. Port from a reviewed commit so later upstream changes do not silently alter the plugin. Preserve the source license and attribution when copying code.
-
-### How the current Android API is used
-
-The native SDK expects the host Activity or Fragment to obtain camera permission, provide a CameraX `PreviewView`, bind a `LifecycleOwner`, and then start an ordered challenge session. Its [public interface](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api/LivenessDetector.kt) and [configuration](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api/LivenessConfig.kt) have this shape:
-
-```kotlin
-val detector = LivenessFactory.create(this)
-val config = LivenessConfig(
-    steps = listOf(
-        LivenessStep.LOOK_LEFT,
-        LivenessStep.LOOK_RIGHT,
-        LivenessStep.BLINK,
-        LivenessStep.SMILE,
-    ),
-    isAuditMode = true,
-)
-
-detector.bind(lifecycleOwner = this, previewView = binding.cameraPreview)
-detector.startDetection(
-    config = config,
-    onStepSuccess = { step -> /* show the next instruction */ },
-    onStepError = { error -> /* per-frame guidance; session continues */ },
-    onComplete = { result ->
-        // result.totalBitmap: final selfie
-        // result.stepEvidence: Map<LivenessStep, Bitmap> in audit mode
-    },
-)
-// Call detector.stopDetection() when the user cancels.
-```
-
-This mirrors the current native API; it is **not** a safe copy-and-paste recipe for the new plugin. In the source, `bind()` loads the camera provider asynchronously, while an immediate `startDetection()` can return without a callback if the provider is not ready. The Flutter port must expose an explicit ready state and start only after initialization succeeds. The current `LivenessResult` returns Android `Bitmap` values; the Flutter API will return file references instead.
-
-### Source-to-plugin mapping
-
-| Android source | Current responsibility | Planned destination in this plugin |
+| Platform | Minimum | Native stack |
 | --- | --- | --- |
-| [`LivenessFactory.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/LivenessFactory.kt) and [`api/`](https://github.com/nunutech40/android-liveness-sdk/tree/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api) | Native entry point, configuration, steps, errors, `Bitmap` result | Kotlin-facing contract; map to typed Dart config/events/result without Android-only types |
-| [`MLKitFaceService.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/MLKitFaceService.kt) | Front camera, CameraX preview and analysis, lifecycle binding | Android session controller and native capture screen, attached to the Flutter plugin's Activity |
-| [`FaceAnalyzer.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/FaceAnalyzer.kt) | ML Kit face signals and ordered challenge checks | Android challenge engine; match its *intended* contract on iOS, then improve both engines together |
-| [`DeviceUtils.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/DeviceUtils.kt) | Low-RAM heuristic | Initial Android performance profile; validate with device measurements |
-| [`BitmapUtils.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/BitmapUtils.kt) | Rotate analyzed frames into `Bitmap` results | Orientation tests and temporary image-file output; use a separate still-capture path for final quality |
+| Android | API 24 (Android 7.0), front camera | CameraX 1.4.2, ML Kit Face Detection 16.1.7 |
+| iOS | iOS 15.5, 64-bit, front camera | AVFoundation, Google ML Kit Face Detection 9.x |
+| Flutter | 3.41.0 / Dart 3.11.0 | MethodChannel and EventChannel |
 
-The current analyzer accepts `LOOK_LEFT` at yaw > 35°, `LOOK_RIGHT` at yaw < −35°, `SMILE` when near frontal with smile probability > 0.7, and `BLINK` when the left-eye-open probability < 0.4. After the configured steps, it accepts a near-frontal face and converts the analysis frame into the final selfie. These are **observed implementation details**, not cross-platform thresholds or evidence of spoof resistance. Direction signs, confidence calibration, and transitions must be verified on real front cameras on both platforms.
+The minimum OS is an installation requirement, not a promise that all devices at that OS floor can finish reliably. Android low-RAM devices still use ML Kit in `FAST` mode with 480×640 analysis; iOS devices with under 2 GB RAM use ML Kit `FAST` mode. Both keep the same challenge rules. There is no separate unvalidated algorithm fallback.
 
-The [error model](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api/LivenessState.kt) declares no face, multiple faces, too far, too close, and not centered. The current analyzer emits only the first two. The Flutter API must distinguish transient frame guidance from terminal failures and only expose guidance that its engines actually implement. Multiple-face rejection is a frame-quality rule, not a complete anti-spoofing check.
+KomerceOS currently resolves Android `minSdk` to 24 and targets iOS 15.0. **Its iOS Podfile and Xcode deployment target must be raised to 15.5** before adding this plugin. This also removes support for any device that cannot run iOS 15.5. Check product analytics and your supported-device policy before shipping that app change.
+
+## Install
+
+Until a tested release tag exists, use a pinned Git commit or a sibling checkout:
+
+```yaml
+# pubspec.yaml
+dependencies:
+  flutter_liveness_sdk:
+    git:
+      url: https://github.com/nunutech40/flutter-liveness-sdk.git
+      ref: <tested-commit-sha>
+```
+
+For local KomerceOS development:
+
+```yaml
+dependencies:
+  flutter_liveness_sdk:
+    path: ../flutter-liveness-sdk
+```
+
+Run `flutter pub get` and rebuild the native app. The Android source and iOS Swift code are included in this plugin; consumers do not install the old Android SDK or copy Swift files. The plugin's Android manifest declares camera permission and the native Activity. The host app must set `NSCameraUsageDescription` in `ios/Runner/Info.plist`:
+
+```xml
+<key>NSCameraUsageDescription</key>
+<string>Camera access is needed to verify face actions and capture a selfie.</string>
+```
+
+Set the host iOS deployment target to 15.5 in both `ios/Podfile` and `Runner.xcodeproj`. The plugin requests camera permission at runtime. If you need pre-capture consent or an explanation screen, implement that in the host app.
+
+## Usage
+
+```dart
+import 'package:flutter_liveness_sdk/flutter_liveness_sdk.dart';
+
+final subscription = FlutterLivenessSdk.events.listen((event) {
+  // event.type: ready, guidance, or stepPassed
+  // event.step / event.code: current action or guidance code
+});
+
+try {
+  final result = await FlutterLivenessSdk.capture(
+    LivenessConfig(
+      steps: [
+        LivenessStep.lookLeft,
+        LivenessStep.lookRight,
+        LivenessStep.smile,
+        LivenessStep.blink,
+      ],
+      auditMode: true,
+      timeout: const Duration(seconds: 30),
+    ),
+  );
+  if (result.isSuccess) {
+    final selfiePath = result.selfiePath!;
+    final perStepEvidence = result.evidencePaths;
+    // Your app decides whether to retain or upload the images.
+  } else {
+    final status = result.status;
+    final reason = result.errorCode;
+  }
+} finally {
+  await subscription.cancel();
+}
+```
+
+Call `await FlutterLivenessSdk.cancel()` to end the active session. Only one capture session can run at once. Invalid config or no foreground Activity/view controller returns a `PlatformException`; camera failures, denial, timeout, and user cancellation return a terminal `LivenessResult`. The `events` stream is informational. The `capture` future is the authoritative terminal result.
+
+`LivenessResult` contains `status` (`success`, `cancelled`, `timedOut`, `failed`), `selfiePath` on success, optional `evidencePaths` keyed by step, and an optional machine-readable `errorCode`. Image paths point to the app's temporary/cache directory. Copy or upload needed images promptly and delete them under your app's biometric-data retention policy. The SDK itself does not upload images.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    App[Flutter host app: KomerceOS] --> API[Dart public API]
-    API --> Bridge[Platform channels: commands and events]
-    Bridge --> Android[Android plugin: Kotlin]
-    Bridge --> IOS[iOS plugin: Swift]
-    Android --> ACam[CameraX: preview, analysis, photo capture]
-    Android --> AFace[ML Kit face detection]
-    IOS --> ICam[AVFoundation: preview, video frames, photo capture]
-    IOS --> IFace[ML Kit face detection]
-    AFace --> ARules[Android challenge state machine]
-    IFace --> IRules[iOS challenge state machine]
-    ARules --> Bridge
-    IRules --> Bridge
+    App[Flutter app] --> Dart[Dart API]
+    Dart --> Commands[MethodChannel: capture / cancel]
+    Native[Native full-screen screen] --> Events[EventChannel: progress]
+    Native --> Result[MethodChannel reply: result and file paths]
+    Commands --> Native
+    Native --> Android[Android: CameraX + ML Kit + Kotlin rules]
+    Native --> IOS[iOS: AVFoundation + ML Kit + Swift rules]
 ```
 
-### Flutter/native boundary
+The native screen owns the camera. It keeps raw frames native and sends only low-volume events and file paths through Flutter channels. Android uses `ImageAnalysis` for actions and `ImageCapture` for the final still. iOS uses `AVCaptureVideoDataOutput` for actions and `AVCapturePhotoOutput` for the final still. Both require an initial neutral pose before a turn or smile, an open → closed → open blink, and a near-frontal pose for the final photo. Each platform has its own state machine because ML Kit coordinate and probability behavior must be calibrated per device.
 
-| Direction | Data | Planned transport |
-| --- | --- | --- |
-| Dart → native | Start session with steps, timeout, audit mode, and presentation options; cancel session | `MethodChannel` commands |
-| Native → Dart | Ready, current step, guidance, step passed, terminal success/failure | `EventChannel` event stream |
-| Native → Dart | Final selfie and optional audit evidence | File paths/URIs in the terminal event; **no camera frames or `Bitmap` objects** |
+Channel names are implementation details: `com.nunutech40.flutter_liveness_sdk/commands` and `/events`. Host apps should use the Dart API. Android's `LivenessActivity` and iOS's `LivenessViewController` are internal.
 
-The public Dart API hides channel details. Channel names, payload versions, event ordering, and error codes will be documented and tested before the first release. Pigeon can replace hand-written payload mapping once the contract is stable; Flutter supports both approaches.
+## Android source reference
 
-For v1, a **full-screen native capture screen** is preferred. Android can bind its existing `PreviewView` to an Activity lifecycle, and iOS can own an `AVCaptureSession` in a view controller. The Flutter app receives progress and the final result. Embedding the preview as a Flutter platform view can be added later if product design requires Flutter widgets over the camera; it needs separate performance and lifecycle testing.
+The Android implementation was designed against [android-liveness-sdk at `29d8a95`](https://github.com/nunutech40/android-liveness-sdk/tree/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e), particularly its [public API](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api/LivenessDetector.kt), [CameraX and ML Kit service](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/MLKitFaceService.kt), [challenge analyzer](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/FaceAnalyzer.kt), and [low-RAM policy](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/DeviceUtils.kt). Its native API is not a dependency of this Flutter plugin.
 
-### Session lifecycle
+This plugin gives the capture screen ownership of permission and camera startup, reports initialization errors, adds timeout and cancellation, requires multi-frame action transitions, checks both eyes for blink, and captures a separate final still. The upstream Android-only SDK remains unchanged for its existing users. Apply any future fixes deliberately to both codebases where relevant.
 
-```text
-idle → requestingPermission → initializing → ready → running
-                                                ├→ completed
-                                                ├→ cancelled
-                                                ├→ timedOut
-                                                └→ failed
+## Release gates and current limitations
+
+- Android example debug APK and iOS device app (without code signing) built successfully on 2026-10-25. `flutter analyze`, Dart/widget tests, and Android Kotlin challenge tests passed. The Apple Silicon iOS 26 simulator build is blocked by ML Kit 9.x binary slices, so use a physical iPhone for camera validation.
+- Test on physical front cameras: Android API 24, an approximately 2 GB low-RAM Android device, a mainstream Android device, an iOS 15.5 device, and a current iPhone. Verify left/right wording, image orientation, blink/smile thresholds, timeout, cancellation, interruption, and image quality.
+- Measure frame latency, memory, thermal impact, crash/OOM rate, false accepts and rejects, and completion rate before claiming support for low-end devices.
+- Perform presentation-attack testing if your product needs stronger assurance. This plugin has no server validation, active depth check, or certified presentation attack detection.
+- The UI copy is currently English and the native screen is not yet themeable. Accessibility, localization, camera interruption behavior, and temporary-file cleanup policy need product review.
+
+## Development
+
+```bash
+flutter pub get
+flutter analyze
+flutter test
+cd example
+flutter build apk --debug
+flutter build ios --no-codesign
 ```
 
-A session must produce exactly one terminal result. `cancel()` must stop capture and release native resources. App backgrounding, screen dismissal, camera interruption, and engine detachment must also have defined outcomes. Starting a second session while one is active must fail clearly or cancel the first by explicit policy.
-
-## Proposed Dart API
-
-The following is a **design sketch**, not installable code:
-
-```dart
-final result = await FlutterLivenessSdk.capture(
-  config: const LivenessConfig(
-    steps: [
-      LivenessStep.lookLeft,
-      LivenessStep.lookRight,
-      LivenessStep.smile,
-      LivenessStep.blink,
-    ],
-    auditMode: false,
-    timeout: Duration(seconds: 30),
-  ),
-  onEvent: (event) {
-    // Update host UI or analytics from typed progress/error events.
-  },
-);
-
-if (result.isSuccess) {
-  final selfiePath = result.selfiePath;
-}
-```
-
-The API will expose typed step, progress, error, and result models. A result should include a terminal status, a final selfie path when successful, optional evidence paths keyed by step, and a machine-readable failure code. Temporary file ownership and cleanup behavior must be explicit. The host application decides whether and where to upload the result; the SDK will not upload biometric images itself.
-
-## Platform implementations
-
-### Android
-
-Port and refactor the Kotlin logic from [android-liveness-sdk](https://github.com/nunutech40/android-liveness-sdk) into this plugin. It currently uses CameraX, bundled ML Kit Face Detection, and Kotlin thresholds/state transitions. The current “low-end” check (`ActivityManager.isLowRamDevice` or RAM below 2 GB) still uses ML Kit: it selects `FAST` and reduces analysis resolution to 480×640. That threshold is an initial heuristic, **not a published ML Kit hardware minimum**.
-
-Before shipping the port:
-
-- Make camera initialization asynchronous and observable; never silently return from `start` while the provider is still loading.
-- Separate low-resolution analysis from final still capture so the final selfie quality is not determined by the analysis stream.
-- Require meaningful action transitions across frames rather than accepting one threshold-crossing frame; define blink using an open → closed → open transition.
-- Implement timeout, cancellation, error propagation, and detector/camera cleanup.
-- Test front-camera mirroring, orientation, face size, and the wording of left/right prompts on real devices.
-
-The host's Android `minSdk` is 24 (Android 7.0) for this SDK. KomerceOS currently resolves `flutter.minSdkVersion` to 24. `compileSdk` and `targetSdk` are separate build/behavior settings and do not raise the minimum installable OS. The host must declare `android.permission.CAMERA` and request it at runtime.
-
-### iOS
-
-Build the iOS engine in `ios/Classes/` with Swift, AVFoundation camera capture, and Google ML Kit Face Detection. Match the Dart-facing states, challenges, error codes, output format, and cancellation behavior of Android. Keep thresholds and coordinate conventions platform-specific where the detectors differ; verify parity with the same test scenarios rather than copying numeric thresholds blindly.
-
-The planned ML Kit iOS dependency requires **iOS 15.5+ on 64-bit devices**. KomerceOS currently targets iOS 15.0, so integration requires updating both the Podfile and Xcode deployment target to at least 15.5. The host must add `NSCameraUsageDescription` to `Info.plist`. The plugin podspec will declare its native dependency; the consumer should not manually copy Swift files into `Runner`.
-
-Apple Vision is a possible alternative if preserving iOS 15.0 becomes a firm requirement. It would be a separate detector implementation with different face signals and calibration work. It is not the v1 plan.
-
-## Device and performance policy
-
-**OS compatibility is not a performance guarantee.** There is no defensible universal minimum RAM or exact model list yet. A weak device may complete the flow in `FAST` mode; another device with the same RAM may have a worse camera or thermal behavior. The SDK should measure actual analysis latency and recover gracefully when a session cannot meet its quality or time limits.
-
-Initial validation matrix:
-
-| Class | Minimum scenario to test |
-| --- | --- |
-| Android OS floor | API 24 device with a front camera |
-| Android low-end | Approximately 2 GB RAM and `isLowRamDevice` devices, including slow camera hardware |
-| Android mainstream | Mid-range and high-end devices across current supported OS versions |
-| iOS OS floor | iOS 15.5 on the oldest practical supported iPhone and iPad models |
-| iOS mainstream | Recent iPhones and iPads, including camera interruption and app backgrounding |
-
-Record processed frame latency, completion and timeout rates, detector failures, memory use, crash/OOM events, thermal degradation, photo quality, and false accept/reject outcomes. Define acceptance thresholds from real measurements before claiming support for a device class. If a device cannot complete verification reliably, return a clear failure/retry path; do not silently switch to an unvalidated weaker check.
-
-Google recommends `FAST` mode, appropriate input resolution, and dropping/throttling frames for real-time face detection. Face size within the frame matters as much as raw resolution.
-
-## Installing in KomerceOS (after the first release)
-
-This package is **not installable yet**. Once tagged, KomerceOS can pin a release in `pubspec.yaml`:
-
-```yaml
-dependencies:
-  flutter_liveness_sdk:
-    git:
-      url: https://github.com/nunutech40/flutter-liveness-sdk.git
-      ref: v1.0.0
-```
-
-Then run `flutter pub get` and perform a full native rebuild. Android source and dependencies compile from this plugin; no JitPack repository is required for the copied Android implementation. iOS Swift and its ML Kit pod are resolved through the plugin's podspec. Before the app can run capture, KomerceOS must add the camera permission declarations, update its iOS deployment target to 15.5, and include the feature's consent/UX copy.
-
-For local development, a relative `path:` dependency can point KomerceOS to a neighboring checkout of this repository. Publish to pub.dev only after the API and native integration are stable.
-
-## Implementation plan
-
-1. **Scaffold** a Flutter plugin for Android and iOS with an example app; set compatible Dart/Flutter constraints for KomerceOS's pinned toolchain.
-2. **Define the contract**: typed config, progress, terminal results, error codes, file lifecycle, and channel payloads.
-3. **Port Android** source into the plugin, remove JitPack coupling, improve camera readiness, capture quality, lifecycle, and low-end handling.
-4. **Implement iOS** capture and challenge flow in Swift with the same public contract.
-5. **Validate behavior** on the device matrix, including poor lighting, multiple/no faces, permission denial, interruption, timeout, cancel, replay attempts, and repeated sessions.
-6. **Integrate KomerceOS** in a feature branch; verify Android and iOS builds, permissions, minimum OS settings, and the complete business flow.
-7. **Release** a tagged version with API reference, changelog, sample app, license and attribution, and known limitations.
-
-A v1 release requires successful native builds on both platforms, one terminal outcome per session, no camera/resource leaks across repeated attempts, acceptable measured performance on the declared device matrix, and documentation that matches the implemented behavior.
-
-## References
-
-- [Existing Android SDK](https://github.com/nunutech40/android-liveness-sdk)
-- [Flutter: developing plugins](https://docs.flutter.dev/packages-and-plugins/developing-packages)
-- [Flutter: platform channels and Pigeon](https://docs.flutter.dev/platform-integration/platform-channels)
-- [Flutter: Git and path dependencies](https://docs.flutter.dev/packages-and-plugins/using-packages)
-- [Google ML Kit: Android face detection and real-time guidance](https://developers.google.com/ml-kit/vision/face-detection/android)
-- [Google ML Kit: iOS face detection and real-time guidance](https://developers.google.com/ml-kit/vision/face-detection/ios)
-- [Google ML Kit: iOS compatibility prerequisites](https://developers.google.com/ml-kit/migration/ios)
+The example app demonstrates the capture call, progress stream, cancellation, and result. The ML Kit 9.x pods used here do not include an arm64 iOS simulator slice; an Apple Silicon iOS 26 simulator build fails at link time. Device builds use the supported arm64 iOS slice. See [LICENSE](LICENSE) for Apache 2.0 terms.
