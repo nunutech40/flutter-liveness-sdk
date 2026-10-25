@@ -40,6 +40,55 @@ flutter-liveness-sdk/
 
 The generated Flutter plugin layout may vary with the Flutter version; keep the same ownership boundaries if the scaffold uses a newer iOS source layout.
 
+## Existing Android SDK as the implementation reference
+
+The Android baseline is [android-liveness-sdk at commit `29d8a95`](https://github.com/nunutech40/android-liveness-sdk/tree/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e). The source is the baseline for **current Android behavior**; its [README](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/README.md) documents the existing public usage. Neither defines a promised Flutter API. Port from a reviewed commit so later upstream changes do not silently alter the plugin. Preserve the source license and attribution when copying code.
+
+### How the current Android API is used
+
+The native SDK expects the host Activity or Fragment to obtain camera permission, provide a CameraX `PreviewView`, bind a `LifecycleOwner`, and then start an ordered challenge session. Its [public interface](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api/LivenessDetector.kt) and [configuration](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api/LivenessConfig.kt) have this shape:
+
+```kotlin
+val detector = LivenessFactory.create(this)
+val config = LivenessConfig(
+    steps = listOf(
+        LivenessStep.LOOK_LEFT,
+        LivenessStep.LOOK_RIGHT,
+        LivenessStep.BLINK,
+        LivenessStep.SMILE,
+    ),
+    isAuditMode = true,
+)
+
+detector.bind(lifecycleOwner = this, previewView = binding.cameraPreview)
+detector.startDetection(
+    config = config,
+    onStepSuccess = { step -> /* show the next instruction */ },
+    onStepError = { error -> /* per-frame guidance; session continues */ },
+    onComplete = { result ->
+        // result.totalBitmap: final selfie
+        // result.stepEvidence: Map<LivenessStep, Bitmap> in audit mode
+    },
+)
+// Call detector.stopDetection() when the user cancels.
+```
+
+This mirrors the current native API; it is **not** a safe copy-and-paste recipe for the new plugin. In the source, `bind()` loads the camera provider asynchronously, while an immediate `startDetection()` can return without a callback if the provider is not ready. The Flutter port must expose an explicit ready state and start only after initialization succeeds. The current `LivenessResult` returns Android `Bitmap` values; the Flutter API will return file references instead.
+
+### Source-to-plugin mapping
+
+| Android source | Current responsibility | Planned destination in this plugin |
+| --- | --- | --- |
+| [`LivenessFactory.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/LivenessFactory.kt) and [`api/`](https://github.com/nunutech40/android-liveness-sdk/tree/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api) | Native entry point, configuration, steps, errors, `Bitmap` result | Kotlin-facing contract; map to typed Dart config/events/result without Android-only types |
+| [`MLKitFaceService.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/MLKitFaceService.kt) | Front camera, CameraX preview and analysis, lifecycle binding | Android session controller and native capture screen, attached to the Flutter plugin's Activity |
+| [`FaceAnalyzer.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/FaceAnalyzer.kt) | ML Kit face signals and ordered challenge checks | Android challenge engine; match its *intended* contract on iOS, then improve both engines together |
+| [`DeviceUtils.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/DeviceUtils.kt) | Low-RAM heuristic | Initial Android performance profile; validate with device measurements |
+| [`BitmapUtils.kt`](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/internal/BitmapUtils.kt) | Rotate analyzed frames into `Bitmap` results | Orientation tests and temporary image-file output; use a separate still-capture path for final quality |
+
+The current analyzer accepts `LOOK_LEFT` at yaw > 35°, `LOOK_RIGHT` at yaw < −35°, `SMILE` when near frontal with smile probability > 0.7, and `BLINK` when the left-eye-open probability < 0.4. After the configured steps, it accepts a near-frontal face and converts the analysis frame into the final selfie. These are **observed implementation details**, not cross-platform thresholds or evidence of spoof resistance. Direction signs, confidence calibration, and transitions must be verified on real front cameras on both platforms.
+
+The [error model](https://github.com/nunutech40/android-liveness-sdk/blob/29d8a95e6fe10e58d459a9caf40fd94fd8de7f6e/src/main/java/com/komerce/liveness/api/LivenessState.kt) declares no face, multiple faces, too far, too close, and not centered. The current analyzer emits only the first two. The Flutter API must distinguish transient frame guidance from terminal failures and only expose guidance that its engines actually implement. Multiple-face rejection is a frame-quality rule, not a complete anti-spoofing check.
+
 ## Architecture
 
 ```mermaid
@@ -176,7 +225,7 @@ For local development, a relative `path:` dependency can point KomerceOS to a ne
 4. **Implement iOS** capture and challenge flow in Swift with the same public contract.
 5. **Validate behavior** on the device matrix, including poor lighting, multiple/no faces, permission denial, interruption, timeout, cancel, replay attempts, and repeated sessions.
 6. **Integrate KomerceOS** in a feature branch; verify Android and iOS builds, permissions, minimum OS settings, and the complete business flow.
-7. **Release** a tagged version with API reference, changelog, sample app, and known limitations.
+7. **Release** a tagged version with API reference, changelog, sample app, license and attribution, and known limitations.
 
 A v1 release requires successful native builds on both platforms, one terminal outcome per session, no camera/resource leaks across repeated attempts, acceptable measured performance on the declared device matrix, and documentation that matches the implemented behavior.
 
