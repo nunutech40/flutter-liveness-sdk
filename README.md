@@ -128,6 +128,7 @@ flutter test
 cd example
 flutter build apk --debug
 flutter build ios --no-codesign
+flutter run -d <device-id>  # open the Test Lab on a physical device
 ```
 
-The example app demonstrates the capture call, progress stream, cancellation, and result. The ML Kit 9.x pods used here do not include an arm64 iOS simulator slice; an Apple Silicon iOS 26 simulator build fails at link time. Device builds use the supported arm64 iOS slice. See [LICENSE](LICENSE) for Apache 2.0 terms.
+The [example Test Lab](example/README.md) lets you configure actions, audit mode, and timeout, then inspect progress events, results, and photos. It runs within this library repository; KomerceOS is not needed for testing. The ML Kit 9.x pods used here do not include an arm64 iOS simulator slice; an Apple Silicon iOS 26 simulator build fails at link time. Device builds use the supported arm64 iOS slice. See [LICENSE](LICENSE) for Apache 2.0 terms.

@@ -1,5 +1,12 @@
-# Flutter Liveness SDK example
+# Flutter Liveness SDK test app
 
-Run this app on an Android or iOS device with a front camera. Tap **Start liveness capture** to open the native capture screen. The app shows progress and the returned result path.
+This is the testing app bundled with the library. Run it on an Android or iOS device with a front camera. It does not modify KomerceOS.
 
-See the repository [README](../README.md) for OS requirements, camera permission setup, and build commands. ML Kit 9.x does not support arm64 iOS simulators on Apple Silicon; use an iPhone for iOS camera validation.
+The **Test Lab** page lets you select face actions, switch audit evidence on or off, set a timeout, start or cancel a native capture session, and inspect progress events, the final selfie, evidence images, and error codes. Images are stored in the app's temporary/cache directory.
+
+```bash
+cd example
+flutter run -d <device-id>
+```
+
+See the repository [README](../README.md) for OS requirements and build instructions. The ML Kit pods used here do not support Apple Silicon arm64 iOS simulators; use a physical iPhone for iOS camera testing.
